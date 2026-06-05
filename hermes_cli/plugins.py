@@ -999,6 +999,40 @@ class PluginContext:
             self.manifest.name, qualified,
         )
 
+    def set_session_suggestion(self, text: str) -> None:
+        """Set ghost-text suggestion for the session-start empty input buffer.
+
+        Plugins call this from their ``on_session_start`` handler to show a
+        dimmed suggestion (like zsh-autosuggestions) that the user can accept
+        with Tab.  The text is bounded to 200 characters and consumed once.
+
+        After storing the suggestion, invalidates the prompt_toolkit
+        Application (if available) so ``get_suggestion()`` is re-called
+        and the ghost text appears immediately — handles the timing edge
+        case where plugins set the suggestion AFTER the initial empty-buffer
+        render.
+        """
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "TRACE: set_session_suggestion(%r)",
+            text[:80] if isinstance(text, str) else text.text[:80],
+        )
+        if hasattr(text, "insert_text"):
+            self._manager._session_suggestion = text
+        else:
+            self._manager._session_suggestion = text[:200]
+        try:
+            _cli = getattr(self._manager, "_cli_ref", None)
+            if _cli is not None:
+                _input_area = getattr(_cli, "_input_area", None)
+                if _input_area is not None:
+                    _input_area.buffer.suggestion = None
+                    _app = getattr(_cli, "_app", None)
+                    if _app is not None:
+                        _app.invalidate()
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # PluginManager
@@ -1022,6 +1056,10 @@ class PluginManager:
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        # Session-start ghost-text suggestion.  Plugins set this via
+        # PluginContext.set_session_suggestion() in their on_session_start
+        # handler.  The CLI reads (and clears) it via consume_session_suggestion().
+        self._session_suggestion: str | None = None
 
     # -----------------------------------------------------------------------
     # Public
@@ -1574,6 +1612,27 @@ class PluginManager:
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
+
+    def consume_session_suggestion(self) -> str | None:
+        """Return and clear the session-start ghost-text suggestion.
+
+        Called by SlashCommandAutoSuggest when the input buffer is empty
+        at the start of a new session.  Plugins set the suggestion via
+        PluginContext.set_session_suggestion().
+        """
+        suggestion = self._session_suggestion
+        logger.info(
+            "TRACE: consume_session_suggestion() → %r",
+            (
+                suggestion.text
+                if hasattr(suggestion, "text")
+                else suggestion
+            )[:80]
+            if suggestion
+            else suggestion,
+        )
+        self._session_suggestion = None
+        return suggestion
 
     # -----------------------------------------------------------------------
     # Introspection
